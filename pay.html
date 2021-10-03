@@ -1,0 +1,247 @@
+<html>
+<head>
+<script src="/ethers-5.4.6.umd.min.js" type="application/javascript"></script>
+<script src="/crypto.js" type="application/javascript"></script>
+<link rel="icon" href="/favicon.svg" />
+<style>
+.btn {
+	background-image: url("/box.svg");
+	background-repeat: no-repeat;
+	background-size: contain;
+	width: 155px;
+	height: 50px;
+	border-style: double;
+	border-color: #ffaa56;
+	border-radius: 10px;
+	cursor: pointer;
+	position: relative; 
+        user-select: none;
+	font-family: Helvetica, sans-serif;
+
+	position: absolute;
+	top: 0;
+	left: 0;
+}
+
+</style>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function(reg) {
+
+    if(reg.installing) {
+      console.log('Service worker installing');
+    } else if(reg.waiting) {
+      console.log('Service worker installed');
+    } else if(reg.active) {
+      console.log('Service worker active');
+      setInterval(async function(){
+	const resp = await fetch("/sw/ping")
+	console.log(await resp.text())
+      }, 20000); // call /sw/ping every 20 seconds to keep service worker alive
+    }
+
+  }).catch(function(error) {
+    // registration failed
+    console.log('Registration failed with ' + error);
+  });
+}
+</script>
+</head>
+<body>
+<div class="btn" id="btn">
+<span id="prob" style="color: #ffaa56; position:absolute; bottom:3; left:5; font-size: 20px;"></span>
+<span id="value" style="color: #3093c7; position:absolute; bottom:0; left:50; font-size: 40px;"></span>
+</div>
+<script>
+
+async function arbitrage() {
+	if(window.Prob === undefined || window.MyPreImage === undefined ||
+	window.PeerHash === undefined || window.PeerPreImage === undefined) {
+		return false
+	}
+	const peerHashBuffer = await crypto.subtle.digest("SHA-256", window.PeerPreImage)
+	if(!equalArrayBuffer(peerHashBuffer, window.PeerHash.buffer)) {// peer is not honest
+		return false
+	}
+	const mergedImage = concatUint8Array(window.PeerPreImage, window.MyPreImage)
+	const hashBuffer = await crypto.subtle.digest("SHA-256", mergedImage)
+	const view = new Uint32Array(hashBuffer)
+	const firstNum = view[0]
+	const prob = (firstNum%1000)/1000.0
+	const result = (prob <= window.Prob)
+	return result
+}
+
+function concatUint8Array(arr1, arr2) {
+	var tmp = new Uint8Array(arr1.length + arr2.length);
+	tmp.set(arr1, 0);
+	tmp.set(arr2, arr1.byteLength);
+	return tmp;
+}
+
+function equalArrayBuffer(buf1, buf2) {
+	if (buf1.byteLength != buf2.byteLength) return false;
+	var dv1 = new Uint8Array(buf1);
+	var dv2 = new Uint8Array(buf2);
+	for (var i = 0 ; i != buf1.byteLength ; i++) {
+		if (dv1[i] != dv2[i]) return false;
+	}
+	return true;
+}
+
+window.addEventListener('DOMContentLoaded', async (event) => {
+	window.ErrList = []
+	window.PaymentResult = "NotDecided"
+	var btn = document.getElementById("btn")
+	const url = new URL(window.location)
+	const mode = url.searchParams.get("mode")
+	if(mode && mode == "dark") {
+		btn.style.backgroundColor = "#303030"
+	} else if(mode && mode == "light") {
+		btn.style.backgroundColor = "white"
+	} else {
+		window.ErrList.push("Invalid mode: "+mode)
+	}
+	var prob = url.searchParams.get("prob")
+	if(prob && (0.01 <= prob && prob <= 0.99) && (prob.length == 4 || prob.length == 3)) {
+		if(prob.length==3) prob += "0"
+		if(prob < 0.10) {
+			document.getElementById("prob").innerText = "\xa0"+prob.slice(3)+"%" // skip "0.0"
+		} else {
+			document.getElementById("prob").innerText = prob.slice(2)+"%" // skip "0."
+		}
+		window.Prob = prob
+	} else {
+		window.ErrList.push("Invalid probablity: "+prob)
+	}
+	var value = url.searchParams.get("value")
+	if(value && (0.01 <= value && value <= 0.99) && (value.length == 4 || value.length == 3)) {
+		if(value.length==3) value += "0"
+		document.getElementById("value").innerText = "$"+value
+		window.Value = value
+	} else {
+		window.ErrList.push("Invalid value: "+value)
+	}
+	const hash = url.searchParams.get("hash")
+	if(hash && hash.length == 64) {
+		window.PeerHash = uint8ArrayFromHex(hash)
+	} else {
+		window.ErrList.push("Invalid value: "+value)
+	}
+	const target = url.searchParams.get("target")
+	if(target && target.length != 0) {
+		try {
+			window.TargetAddress = ethers.utils.getAddress(target)
+		} catch(e) {
+			window.ErrList.push("Invalid target address: "+target)
+		}
+	} else {
+		window.ErrList.push("No target address")
+	}
+	window.MyPreImage = await crypto.getRandomValues(new Uint8Array(32))
+	const myHashBuffer = await crypto.subtle.digest('SHA-256', window.MyPreImage)
+	window.MyHash = uint8ArrayToHex(new Uint8Array(myHashBuffer))
+	await tryInit()
+})
+
+function getStatus() {
+	var status = {
+		withWallet: window.Wallet != undefined,
+		errors: window.ErrList,
+		value: window.Value,
+		prob: window.Prob,
+		geometry: {width: 155, height: 50, radius: 10},
+		myHash: window.MyHash,
+		paymentResult: window.PaymentResult,
+		targetAddress: window.targetAddress,
+	}
+	if(status.withWallet) {
+		status.myAddress = window.Wallet.address
+	}
+	if(status.paymentResult != "NotDecided") {
+		status.myPreImage = uint8ArrayToHex(window.MyPreImage)
+	}
+	if(window.TargetAddress) {
+		status.targetAddress = window.TargetAddress
+	}
+	if(window.CoinType) {
+		status.coinType = window.CoinType
+	}
+	if(window.PeerPreImage) {
+		status.peerPreImage = window.PeerPreImage
+	}
+	return status
+}
+
+async function messageHandler(event) {
+	if(event.data.command === undefined || event.data.windowPostMessageProxy === undefined) {
+		return
+	}
+	var resp = {windowPostMessageProxy: {id: event.data.windowPostMessageProxy.id}}
+	if(event.data.command == "getStatus") {
+		resp.status = getStatus()
+	} else if(event.data.command == "getReadyToPay") {
+		try {
+			window.CoinType = ethers.utils.getAddress(event.data.coinType)
+			window.PeerPreImage = uint8ArrayFromHex(event.data.preImage)
+			resp.status = getStatus()
+		} catch(e) {
+			resp.status = {errInfo: "Invalid coin type: "+event.data.coinType}
+		}
+	} else {
+		resp.status = {errInfo: "Unknown Command"}
+	}
+	parent.postMessage(resp, "*")
+}
+
+window.addEventListener("message", messageHandler, false)
+
+var btn = document.getElementById("btn")
+
+btn.onmousedown = function() {
+	if(window.Wallet === undefined) {
+		return
+	}
+	if(window.PaymentResult == "NotDecided") {
+		btn.style.borderStyle = "solid"
+		btn.style.fontWeight = "bold"
+	}
+}
+
+btn.onmouseup = function() {
+	if(window.Wallet === undefined) {
+		return
+	}
+	btn.style.borderStyle = "double"
+	btn.style.fontWeight = "normal"
+}
+
+btn.onclick = async function() {
+	if(window.Wallet === undefined) {
+		return
+	}
+	const result = await arbitrage()
+	var probElem = document.getElementById("prob")
+	if(result) {
+		window.PaymentResult = "AgreeToPay"
+		probElem.innerText = "💰"
+		probElem.style.fontSize = "26px"
+		probElem.style.bottom = "0"
+		probElem.style.left = "12"
+	} else {
+		window.PaymentResult = "RefuseToPay"
+		probElem.innerText = "😝"
+		probElem.style.fontSize = "24px"
+		probElem.style.bottom = "0"
+		probElem.style.left = "13"
+		document.getElementById("value").innerText = "$0.00"
+	}
+	document.getElementById("btn").style.cursor = "not-allowed"
+	var resp = {}
+	resp.status = getStatus()
+	parent.postMessage(resp, "*")
+}
+
+</script>
+</body>
+</html>
